@@ -1,6 +1,6 @@
 import pytest
 
-from scripts.backfill import months_between
+from data_platform.backfill import months_between
 
 
 def test_months_between_includes_boundaries() -> None:

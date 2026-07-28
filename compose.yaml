@@ -1,0 +1,359 @@
+name: data-platform-e2e
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  env_file: .env
+  environment: &airflow-environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+    PYTHONPATH: /opt/airflow/src
+    DBT_PROFILES_DIR: /opt/airflow/dbt
+    LAKE_ROOT: /opt/airflow/lake
+    MINIO_ENDPOINT: minio:9000
+    MINIO_SECURE: "false"
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: analytics
+    ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    AIRFLOW__METRICS__STATSD_ON: ${STATSD_ON:-false}
+    AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+    AIRFLOW__METRICS__STATSD_PORT: "9125"
+    OPENLINEAGE_DISABLED: ${OPENLINEAGE_DISABLED:-true}
+    OPENLINEAGE_URL: http://marquez-api:5000
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./src:/opt/airflow/src
+    - ./dbt:/opt/airflow/dbt
+    - ./lake:/opt/airflow/lake
+    - ./logs/airflow:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file: .env
+    environment:
+      POSTGRES_DB: airflow
+    ports:
+      - "${POSTGRES_HOST_PORT:-15432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    env_file: .env
+    environment:
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "$${AIRFLOW_ADMIN_USER}" \
+          --password "$${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname Data \
+          --lastname Admin \
+          --role Admin \
+          --email admin@example.local || true
+        python -m data_platform.bootstrap
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  superset:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    image: data-platform-superset:local
+    env_file: .env
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        superset db upgrade &&
+        (superset fab create-admin \
+          --username "$${SUPERSET_ADMIN_USER}" \
+          --password "$${SUPERSET_ADMIN_PASSWORD}" \
+          --firstname Data \
+          --lastname Admin \
+          --email admin@example.local || true) &&
+        superset init &&
+        gunicorn --bind 0.0.0.0:8088 --workers 2 --timeout 120 "superset.app:create_app()"
+    ports:
+      - "8088:8088"
+    volumes:
+      - superset-home:/app/superset_home
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  superset-bootstrap:
+    <<: *airflow-common
+    command: python /opt/airflow/scripts/setup_superset.py
+    environment:
+      <<: *airflow-environment
+      SUPERSET_URL: http://superset:8088
+    volumes:
+      - ./scripts:/opt/airflow/scripts:ro
+    depends_on:
+      superset:
+        condition: service_healthy
+    restart: "no"
+
+  statsd-exporter:
+    image: prom/statsd-exporter:latest
+    profiles: ["observability"]
+    ports:
+      - "9102:9102"
+      - "9125:9125/udp"
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    profiles: ["observability"]
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/analytics?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - statsd-exporter
+      - postgres-exporter
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["observability"]
+    env_file: .env
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  marquez-db:
+    image: postgres:16-alpine
+    profiles: ["lineage"]
+    environment:
+      POSTGRES_DB: marquez
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+    volumes:
+      - marquez-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marquez -d marquez"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  marquez-api:
+    image: marquezproject/marquez:0.50.0
+    profiles: ["lineage"]
+    environment:
+      MARQUEZ_PORT: "5000"
+      MARQUEZ_ADMIN_PORT: "5001"
+      POSTGRES_HOST: marquez-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: marquez
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  marquez-web:
+    image: marquezproject/marquez-web:0.50.0
+    profiles: ["lineage"]
+    environment:
+      MARQUEZ_HOST: marquez-api
+      MARQUEZ_PORT: "5000"
+      WEB_PORT: "3000"
+    ports:
+      - "3002:3000"
+    depends_on:
+      - marquez-api
+    restart: unless-stopped
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    profiles: ["streaming"]
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+    ports:
+      - "19092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  stream-consumer:
+    <<: *airflow-common
+    profiles: ["streaming"]
+    command: python /opt/airflow/streaming/consumer.py --max-events 10000
+    volumes:
+      - ./src:/opt/airflow/src
+      - ./streaming:/opt/airflow/streaming:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  stream-replay:
+    <<: *airflow-common
+    profiles: ["streaming"]
+    command: >-
+      python /opt/airflow/streaming/replay.py
+      --source /opt/airflow/lake/bronze/nyc_taxi/yellow/year=2024/month=01/yellow_tripdata_2024-01.parquet
+      --limit 10000
+    volumes:
+      - ./lake:/opt/airflow/lake:ro
+      - ./streaming:/opt/airflow/streaming:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: "no"
+
+  spark-master:
+    image: apache/spark:4.2.0
+    profiles: ["spark"]
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master
+    ports:
+      - "7077:7077"
+      - "8081:8080"
+    restart: unless-stopped
+
+  spark-worker:
+    image: apache/spark:4.2.0
+    profiles: ["spark"]
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      SPARK_WORKER_CORES: "2"
+      SPARK_WORKER_MEMORY: 2g
+    volumes:
+      - ./lake:/opt/spark/lake
+    depends_on:
+      - spark-master
+    restart: unless-stopped
+
+  spark-job:
+    image: apache/spark:4.2.0
+    profiles: ["spark"]
+    command: >-
+      /opt/spark/bin/spark-submit
+      --master spark://spark-master:7077
+      /opt/spark/jobs/monthly_summary.py
+      --source /opt/spark/lake/bronze/nyc_taxi/yellow/year=2024/month=01/yellow_tripdata_2024-01.parquet
+      --output /opt/spark/lake/experiments/spark/monthly_summary
+    volumes:
+      - ./lake:/opt/spark/lake
+      - ./spark:/opt/spark/jobs:ro
+    depends_on:
+      - spark-master
+      - spark-worker
+    restart: "no"
+
+volumes:
+  postgres-data:
+  minio-data:
+  superset-home:
+  prometheus-data:
+  grafana-data:
+  marquez-data:

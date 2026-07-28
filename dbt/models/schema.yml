@@ -1,0 +1,84 @@
+version: 2
+
+models:
+  - name: stg_trips
+    description: Typed view over the immutable NYC TLC Yellow Taxi Bronze file.
+    columns:
+      - name: pickup_at
+        data_tests: [not_null]
+      - name: dropoff_at
+        data_tests: [not_null]
+
+  - name: dim_zone
+    description: Conformed NYC taxi zone dimension.
+    columns:
+      - name: zone_id
+        data_tests: [not_null, unique]
+      - name: zone_name
+        data_tests: [not_null]
+
+  - name: silver_trip_events
+    description: Deduplicated trip events with a quality status.
+    columns:
+      - name: trip_id
+        data_tests: [not_null, unique]
+      - name: quality_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - accepted
+                  - missing_timestamp
+                  - invalid_duration
+                  - duration_out_of_range
+                  - distance_out_of_range
+                  - amount_out_of_range
+                  - missing_zone
+
+  - name: silver_trips
+    description: Backward-compatible view over the incremental trip fact.
+    columns:
+      - name: trip_id
+        data_tests: [not_null, unique]
+
+  - name: fact_trips
+    description: Incremental, valid, deduplicated trip fact with UTC timestamps.
+    columns:
+      - name: trip_id
+        data_tests: [not_null, unique]
+      - name: dataset_month
+        data_tests: [not_null]
+      - name: pickup_zone_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_zone')
+                field: zone_id
+      - name: dropoff_zone_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_zone')
+                field: zone_id
+
+  - name: mart_daily_demand
+    description: Daily demand and revenue metrics.
+    columns:
+      - name: trip_date
+        data_tests: [not_null, unique]
+      - name: trip_count
+        data_tests: [not_null]
+
+  - name: mart_zone_performance
+    description: Daily pickup-zone performance metrics.
+    columns:
+      - name: trip_date
+        data_tests: [not_null]
+      - name: zone_id
+        data_tests: [not_null]
+
+  - name: mart_hourly_pattern
+    description: Aggregate demand by weekday and pickup hour.
+    columns:
+      - name: pickup_hour
+        data_tests: [not_null]

@@ -1,0 +1,28 @@
+name: nyc_taxi_medallion
+version: "1.0.0"
+config-version: 2
+
+profile: nyc_taxi_medallion
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: target
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  bronze_trip_path: "/opt/airflow/lake/bronze/nyc_taxi/yellow/year=2024/month=01/yellow_tripdata_2024-01.parquet"
+  bronze_zone_path: "/opt/airflow/lake/bronze/nyc_taxi/zones/taxi_zone_lookup.csv"
+  dataset_month: "2024-01"
+
+models:
+  nyc_taxi_medallion:
+    staging:
+      +materialized: view
+      +schema: staging
+    silver:
+      +materialized: table
+      +schema: silver
+    gold:
+      +materialized: table
+      +schema: gold

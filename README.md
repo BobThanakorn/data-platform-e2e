@@ -1,55 +1,57 @@
 # Data Platform End-to-End: NYC Taxi Medallion
 
-แพลตฟอร์มข้อมูลแบบ local-first ที่ประมวลผล NYC TLC Yellow Taxi ตั้งแต่การดาวน์โหลดข้อมูล
-จนถึง dashboard-ready marts โดยไม่ต้องใช้ paid cloud service
+โปรเจกต์นี้สร้างแพลตฟอร์มข้อมูลแบบรันบนเครื่องตัวเอง (local-first)  
+รับข้อมูลแท็กซี่ NYC Yellow Taxi จากแหล่งสาธารณะ แล้วประมวลผลจนได้ dashboard พร้อมใช้งาน  
+โดยไม่ต้องพึ่งบริการ cloud ที่ต้องเสียเงิน
 
-## Architecture
+## สถาปัตยกรรมโดยรวม
 
 ```text
-NYC TLC HTTPS
+NYC TLC (ดาวน์โหลดผ่าน HTTPS)
     |
     v
-Python ingestion -- checksum / manifest / schema validation
+Python ingestion — ตรวจ schema / จำนวนแถว / checksum
     |
     v
-MinIO Bronze + local cache (immutable Parquet)
+MinIO Bronze + ไฟล์ cache ในเครื่อง (Parquet เก็บแบบไม่แก้ทับ)
     |
     v
 DuckDB + dbt
-    |-- Silver: typed, deduplicated, quality status, quarantine
-    `-- Gold: daily demand, zone performance, hourly pattern
+    |-- Silver: จัดชนิดข้อมูล, ตัดซ้ำ, ติดสถานะคุณภาพ, กักแถวมีปัญหา
+    `-- Gold: สรุปรายวัน / ตามโซน / ตามชั่วโมง
     |
-    +--> MinIO Silver/Gold Parquet
-    `--> PostgreSQL --> Apache Superset
-
-Apache Airflow controls retries, schedule, backfill, tests and publishing.
+    +--> เก็บ Parquet ชั้น Silver/Gold ลง MinIO
+    `--> PostgreSQL --> Apache Superset (dashboard)
 ```
 
-## Included components
+Apache Airflow คุมตารางเวลา, การลองใหม่เมื่อพลาด, backfill และการ publish ผลลัพธ์
 
-- Apache Airflow with `LocalExecutor`
-- MinIO S3-compatible data lake
-- DuckDB and dbt Core transformations
-- PostgreSQL Gold serving layer and pipeline audit log
-- Apache Superset BI
-- dbt and Great Expectations quality gates
-- Prometheus/Grafana, Marquez/OpenLineage, Redpanda and Spark optional profiles
-- pytest, Ruff, pre-commit and GitHub Actions CI
-- NYC TLC Yellow Taxi 2024 (January starter plus sequential full-year backfill)
+## ส่วนประกอบในโปรเจกต์
 
-## Prerequisites
+- **Apache Airflow** — จัดคิวและรัน pipeline
+- **MinIO** — คลังข้อมูลแบบ S3 บนเครื่อง
+- **DuckDB + dbt** — แปลงข้อมูลชั้น Bronze → Silver → Gold
+- **PostgreSQL** — เก็บตาราง Gold และประวัติการรัน pipeline
+- **Apache Superset** — ทำ dashboard / BI
+- **dbt + Great Expectations** — ตรวจคุณภาพข้อมูล
+- **โปรไฟล์เสริม (เปิดเมื่อต้องการ):** Prometheus/Grafana, Marquez/OpenLineage, Redpanda, Spark
+- **pytest, Ruff, pre-commit, GitHub Actions** — ทดสอบและ CI
+- ข้อมูลตัวอย่าง: NYC Yellow Taxi ปี 2024 (เริ่มเดือนมกราคม แล้ว backfill ทั้งปีได้)
 
-- Windows 11 with WSL2 and Docker Engine, Podman Desktop, or Rancher Desktop
+## สิ่งที่ต้องมีก่อนเริ่ม
+
+- Windows 11 พร้อม WSL2 และ Docker Engine / Podman Desktop / Rancher Desktop
 - Docker Compose v2
-- At least 16 GB RAM; 10 GB free disk for one month or 30 GB for the full-year/extensions
-- Ports `15432`, `8080`, `8088`, `9000`, and `9001` available
+- RAM อย่างน้อย 16 GB
+- พื้นที่ว่างประมาณ 10 GB สำหรับ 1 เดือน หรือประมาณ 30 GB ถ้าทำทั้งปี + ส่วนเสริม
+- พอร์ตว่าง: `15432`, `8080`, `8088`, `9000`, `9001`
 
-Docker Desktop is free only under its license conditions. Docker Engine in WSL2, Podman Desktop,
-or Rancher Desktop avoids requiring a Docker Desktop commercial subscription.
+> หมายเหตุ: Docker Desktop อาจมีเงื่อนไขลิขสิทธิ์  
+> ถ้าใช้ Docker Engine บน WSL2, Podman หรือ Rancher จะเลี่ยงปัญหา subscription ของ Docker Desktop ได้
 
-## Quick start
+## เริ่มต้นใช้งานเร็วๆ
 
-Generate a unique local `.env` before first startup. The file is ignored by Git:
+สร้างไฟล์ `.env` ก่อนครั้งแรก (ไฟล์นี้ไม่ถูกอัปขึ้น Git):
 
 ```powershell
 py -3.11 scripts\generate_env.py
@@ -59,18 +61,19 @@ docker compose up -d
 docker compose ps
 ```
 
-Open:
+จากนั้นเปิดหน้าเว็บเหล่านี้:
 
 - Airflow: <http://localhost:8080>
 - MinIO Console: <http://localhost:9001>
 - Superset: <http://localhost:8088>
-- NYC Taxi dashboard: <http://localhost:8088/superset/dashboard/nyc-taxi-analytics/>
+- Dashboard NYC Taxi: <http://localhost:8088/superset/dashboard/nyc-taxi-analytics/>
 
-Usernames and generated passwords are in the local `.env`.
+ชื่อผู้ใช้และรหัสผ่านอยู่ในไฟล์ `.env` บนเครื่องคุณ
 
-## Run January 2024 end-to-end
+## รันข้อมูลเดือนมกราคม 2024 แบบครบวงจร
 
-From the Airflow UI, enable `nyc_taxi_medallion`, select **Trigger DAG w/ config**, and use:
+ในหน้า Airflow ให้เปิด DAG ชื่อ `nyc_taxi_medallion`  
+แล้วเลือก **Trigger DAG w/ config** พร้อมค่านี้:
 
 ```json
 {
@@ -80,31 +83,30 @@ From the Airflow UI, enable `nyc_taxi_medallion`, select **Trigger DAG w/ config
 }
 ```
 
-Or trigger it from PowerShell:
+หรือสั่งจาก PowerShell:
 
 ```powershell
 docker compose exec airflow-scheduler airflow dags trigger nyc_taxi_medallion `
   --conf '{\"year\": 2024, \"month\": 1, \"force_download\": false}'
 ```
 
-The first run downloads approximately three million rows. Subsequent runs reuse the local file and
-skip MinIO uploads when the SHA-256 checksum has not changed.
+รอบแรกจะดาวน์โหลดประมาณ 3 ล้านแถว  
+รอบถัดไปถ้าไฟล์เดิม checksum เดิม ระบบจะใช้ไฟล์ในเครื่องและข้ามอัปโหลด MinIO ที่ไม่จำเป็น
 
-## Pipeline tasks
+## ขั้นตอนใน pipeline
 
-1. `resolve_month` selects an explicitly requested month or two months behind the calendar,
-   matching TLC's typical publication lag.
-2. `source_is_available` skips cleanly when TLC has not published that partition.
-3. `ingest` downloads the trip Parquet and taxi-zone CSV atomically.
-4. Source schema, row count and SHA-256 are validated and written to a manifest.
-5. Bronze files are uploaded to MinIO using deterministic object keys.
-6. `dbt build` incrementally merges `fact_trips`, rebuilds marts and runs tests.
-7. Great Expectations checks row counts, rejection rate and the 24-hour SLA.
-8. Gold and Silver partitions are exported as compressed Parquet to MinIO.
-9. Gold marts are transactionally replaced for the affected month in PostgreSQL.
-10. Freshness, seven-run volume anomaly and quality results are recorded in audit details.
+1. `resolve_month` — เลือกเดือนที่ระบุ หรือย้อนหลัง 2 เดือน (ตามช่วงที่ TLC มักเผยแพร่ข้อมูล)
+2. `source_is_available` — ถ้าแหล่งข้อมูลยังไม่ออก จะข้ามอย่างสุภาพ ไม่ถือว่า fail
+3. `ingest` — ดาวน์โหลดไฟล์ trip (Parquet) และรายชื่อโซนแท็กซี่ (CSV)
+4. ตรวจ schema, จำนวนแถว และ SHA-256 แล้วเขียนลง manifest
+5. อัปโหลดไฟล์ Bronze ขึ้น MinIO ด้วยชื่อ object ที่คงที่
+6. `dbt build` — รวม `fact_trips` แบบ incremental, สร้าง marts และรันทดสอบ
+7. Great Expectations — ตรวจจำนวนแถว, อัตรา reject และ SLA ภายใน 24 ชั่วโมง
+8. ส่งออก Silver/Gold เป็น Parquet อัดลง MinIO
+9. อัปเดตตาราง Gold ใน PostgreSQL เฉพาะเดือนที่รัน (แทนที่แบบ transaction)
+10. บันทึกผล freshness, การเตือนปริมาณผิดปกติ (เทียบ 7 รอบก่อน) และผลคุณภาพลง audit
 
-## Data-lake layout
+## โครงสร้างคลังข้อมูล
 
 ```text
 bronze/
@@ -122,52 +124,51 @@ gold/
   _manifests/year=2024/month=01/manifest.json
 ```
 
-The same layout is cached under `lake/` on the host. This directory is ignored by Git.
+โครงสร้างเดียวกันถูก cache ไว้ที่โฟลเดอร์ `lake/` บนเครื่อง (ถูก ignore จาก Git)
 
-## Data-quality policy
+## นโยบายคุณภาพข้อมูล
 
-Silver assigns one `quality_status` per deduplicated trip:
+แต่ละทริปใน Silver จะได้สถานะ `quality_status` หนึ่งค่า เช่น:
 
-- `accepted`
-- `missing_timestamp`
-- `invalid_duration`
-- `duration_out_of_range`
-- `distance_out_of_range`
-- `amount_out_of_range`
-- `missing_zone`
+- `accepted` — ใช้ได้
+- `missing_timestamp` — ขาดเวลา
+- `invalid_duration` — ระยะเวลาไม่สมเหตุสมผล
+- `duration_out_of_range` — ระยะเวลาอยู่นอกช่วงที่รับได้
+- `distance_out_of_range` — ระยะทางอยู่นอกช่วงที่รับได้
+- `amount_out_of_range` — ยอดเงินอยู่นอกช่วงที่รับได้
+- `missing_zone` — หาโซนไม่เจอ
 
-Invalid rows go to `silver_quarantine`; they are never silently deleted. `dbt build` fails if:
+แถวที่ใช้ไม่ได้จะถูกส่งไป `silver_quarantine` ไม่ถูกลบเงียบๆ  
+`dbt build` จะล้มเหลวถ้า:
 
-- IDs expected to be unique are duplicated
-- required dimension keys are missing
-- zone relationships are invalid
-- the rejected proportion exceeds 5%
+- ID ที่ต้องไม่ซ้ำกลับซ้ำ
+- คีย์มิติที่จำเป็นหาย
+- ความสัมพันธ์กับโซนไม่ถูกต้อง
+- สัดส่วนแถวที่ reject เกิน 5%
 
-Great Expectations additionally verifies non-empty Bronze/Silver data, rejection rate and pipeline
-freshness. A Bronze volume change above 30% from up to seven previous successful runs is preserved
-as an audit warning.
+Great Expectations ยังตรวจเพิ่มว่า Bronze/Silver ไม่ว่าง, อัตรา reject และความสดของ pipeline  
+ถ้าปริมาณ Bronze เปลี่ยนเกิน 30% เมื่อเทียบกับสูงสุด 7 รอบที่สำเร็จก่อนหน้า จะบันทึกเป็นคำเตือนใน audit (ไม่บังคับ fail)
 
-## Superset dashboard
+## Dashboard ใน Superset
 
-The one-shot `superset-bootstrap` service automatically and idempotently creates:
+บริการ `superset-bootstrap` จะสร้างให้อัตโนมัติ (รันซ้ำได้ ไม่สร้างของซ้ำ):
 
-- PostgreSQL connection `NYC Taxi Analytics`
-- datasets for the three Gold marts and pipeline audit table
-- four KPI cards plus daily trend, top zones, weekday/hour heatmap and quality rate
-- the published `NYC Taxi Analytics` dashboard
+- การเชื่อมต่อ PostgreSQL ชื่อ `NYC Taxi Analytics`
+- dataset ของ Gold marts ทั้ง 3 ตัว และตาราง audit
+- การ์ด KPI 4 ใบ, กราฟแนวโน้มรายวัน, โซนยอดนิยม, heatmap วัน×ชั่วโมง และอัตราคุณภาพ
+- dashboard ที่เผยแพร่แล้วชื่อ `NYC Taxi Analytics`
 
-Run the bootstrap again after resetting Superset:
+ถ้า reset Superset แล้ว รัน bootstrap อีกครั้งได้ดังนี้:
 
 ```powershell
 docker compose run --rm superset-bootstrap
 ```
 
-The script reuses resources by name and does not create duplicates. Ready-to-use SQL alternatives
-are also available in `analytics/dashboard_queries.sql`.
+มี SQL สำเร็จรูปไว้ดูเพิ่มใน `analytics/dashboard_queries.sql`
 
-## Run without Airflow
+## รันโดยไม่ใช้ Airflow
 
-Start only the infrastructure:
+เปิดแค่โครงสร้างพื้นฐาน แล้วรันสคริปต์ท้องถิ่น:
 
 ```powershell
 docker compose up -d postgres minio
@@ -176,10 +177,9 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe scripts\run_local.py --year 2024 --month 1
 ```
 
-The local runner reads `.env`, performs the same ingestion, executes `dbt build`, exports Parquet,
-and publishes PostgreSQL marts.
+สคริปต์จะอ่าน `.env` แล้วทำ ingest → `dbt build` → ส่งออก Parquet → publish เข้า PostgreSQL เหมือน pipeline หลัก
 
-## Tests and static checks
+## ทดสอบและตรวจโค้ด
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
@@ -188,52 +188,52 @@ docker compose config --quiet
 docker compose exec airflow-scheduler airflow dags list-import-errors
 ```
 
-## Backfill another month
+## Backfill หลายเดือน
 
-Backfill sequentially so only one process writes the local DuckDB file:
+รันทีละเดือนตามลำดับ (เพื่อไม่ให้หลายโปรเซสเขียนไฟล์ DuckDB พร้อมกัน):
 
 ```powershell
 .\scripts\task.ps1 backfill -Start 2024-01 -End 2024-12
 ```
 
-Bronze objects are append-only, `fact_trips` uses a unique key, and publishing replaces only the
-affected PostgreSQL month, so retries are idempotent.
+Bronze เก็บแบบเพิ่มอย่างเดียว, `fact_trips` ใช้คีย์ไม่ซ้ำ, และ PostgreSQL แทนที่เฉพาะเดือนที่รัน  
+ดังนั้นการลองใหม่จะปลอดภัย (idempotent)
 
-## Optional profiles
+## โปรไฟล์เสริม (ไม่บังคับ)
 
-These profiles are not required for the core pipeline and should be opened one at a time on a
-16 GB machine.
+ไม่จำเป็นต่อ pipeline หลัก  
+ถ้าระบบมี RAM ราว 16 GB แนะนำเปิดทีละชุด:
 
 ```powershell
-# Prometheus http://localhost:9090 and Grafana http://localhost:3001
+# Prometheus http://localhost:9090 และ Grafana http://localhost:3001
 .\scripts\task.ps1 observability
 
-# Marquez API http://localhost:5000 and UI http://localhost:3002
+# Marquez API http://localhost:5000 และ UI http://localhost:3002
 .\scripts\task.ps1 lineage
 
-# Replay and aggregate 10,000 trips through Redpanda
+# จำลอง streaming 10,000 ทริปผ่าน Redpanda
 .\scripts\task.ps1 streaming
 
-# Distributed Spark master/worker summary experiment
+# ทดลองสรุปข้อมูลด้วย Spark
 .\scripts\task.ps1 spark
 ```
 
-Set `ALERT_WEBHOOK_URL` for pipeline failure notifications. The observability and lineage commands
-enable Airflow StatsD/OpenLineage when recreating the scheduler.
+ตั้งค่า `ALERT_WEBHOOK_URL` ถ้าต้องการแจ้งเตือนเมื่อ pipeline พลาด  
+คำสั่ง observability / lineage จะช่วยเปิด StatsD หรือ OpenLineage ของ Airflow เมื่อ recreate scheduler
 
-## Automation and documentation
+## เครื่องมือช่วยและเอกสาร
 
-- `Makefile` provides equivalent commands for Unix/WSL.
-- `scripts/task.ps1` is the Windows entry point.
-- `scripts/acceptance.ps1` validates code, services and warehouse counts.
-- `scripts/recovery_drill.ps1` simulates a MinIO outage and verifies idempotent recovery.
-- `.github/workflows/ci.yml` runs tests, lint, dbt parse and Compose validation.
-- `.pre-commit-config.yaml` enforces local checks.
-- `docs/` contains architecture, ADR, data dictionary, runbook, extensions guide and demo script.
+- `Makefile` — คำสั่งเทียบเท่าสำหรับ Unix/WSL
+- `scripts/task.ps1` — จุดเริ่มหลักบน Windows
+- `scripts/acceptance.ps1` — ตรวจโค้ด, บริการ และจำนวนแถวในคลัง
+- `scripts/recovery_drill.ps1` — จำลอง MinIO ล่ม แล้วตรวจว่ารันซ้ำได้ถูกต้อง
+- `.github/workflows/ci.yml` — รันเทส, lint, dbt parse และตรวจ Compose บน GitHub
+- `.pre-commit-config.yaml` — ตรวจก่อน commit บนเครื่อง
+- โฟลเดอร์ `docs/` — สถาปัตยกรรม, ADR, พจนานุกรมข้อมูล, runbook, ส่วนขยาย และสคริปต์ demo
 
-## Operations
+## การดูแลระบบประจำวัน
 
-View service state and logs:
+ดูสถานะและ log:
 
 ```powershell
 docker compose ps
@@ -241,24 +241,25 @@ docker compose logs --since=10m airflow-scheduler
 docker compose logs --since=10m minio
 ```
 
-Stop services without deleting data:
+หยุดบริการโดยยังเก็บข้อมูลไว้:
 
 ```powershell
 docker compose down
 ```
 
-Delete all local container data only when intentionally resetting the platform:
+ล้างข้อมูลใน container ทั้งหมด (ใช้เมื่อตั้งใจรีเซ็ตจริงๆ):
 
 ```powershell
 docker compose down --volumes
 Remove-Item -Recurse -Force lake, logs
 ```
 
-The reset command is destructive. Bronze data can be downloaded again, but local audit history and
-Superset configuration will be lost.
+คำสั่งรีเซ็ตจะลบประวัติ audit บนเครื่องและการตั้งค่า Superset  
+ไฟล์ Bronze ดาวน์โหลดใหม่ได้ แต่ของที่ตั้งค่าไว้ในเครื่องจะหาย
 
-## Cost boundary
+## ขอบเขตเรื่องค่าใช้จ่าย
 
-Every required component is self-hosted and has no required license or cloud usage fee. Hardware,
-storage, internet and electricity remain real costs. Public GitHub Actions usage also depends on
-repository visibility and current GitHub limits; local tests are the zero-cloud-cost default.
+คอมโพเนนต์หลักทั้งหมดรันบนเครื่องตัวเอง ไม่มีค่าบริการ cloud ที่บังคับใช้  
+แต่ยังมีต้นทุนจริง เช่น เครื่องคอมพิวเตอร์, พื้นที่เก็บข้อมูล, อินเทอร์เน็ต และไฟ  
+การใช้ GitHub Actions ของ repo สาธารณะขึ้นกับโควต้าของ GitHub  
+ถ้าอยากเลี่ยงค่า cloud ให้รันเทสบนเครื่องเป็นค่าเริ่มต้น

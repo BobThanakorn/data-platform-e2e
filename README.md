@@ -1,10 +1,10 @@
 # Data Platform End-to-End: NYC Taxi Medallion
 
 โปรเจกต์นี้สร้างแพลตฟอร์มข้อมูลแบบรันบนเครื่องตัวเอง (local-first)  
-รับข้อมูลแท็กซี่ NYC Yellow Taxi จากแหล่งสาธารณะ แล้วประมวลผลจนได้ dashboard พร้อมใช้งาน  
+ใช้ Public dataset NYC Yellow Taxi จากแหล่งข้อมูลสาธารณะ แล้วประมวลผลจนได้ dashboard พร้อมใช้งาน  
 โดยไม่ต้องพึ่งบริการ cloud ที่ต้องเสียเงิน
 
-## สถาปัตยกรรมโดยรวม
+## Data Architecture โดยรวม
 
 ```text
 NYC TLC (ดาวน์โหลดผ่าน HTTPS)
@@ -51,7 +51,7 @@ Apache Airflow คุมตารางเวลา, การลองใหม
 
 ## เริ่มต้นใช้งานเร็วๆ
 
-สร้างไฟล์ `.env` ก่อนครั้งแรก (ไฟล์นี้ไม่ถูกอัปขึ้น Git):
+สร้างไฟล์ `.env` ก่อนครั้งแรก (ไฟล์นี้ไม่ถูกอัพขึ้น Git):
 
 ```powershell
 py -3.11 scripts\generate_env.py
